@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"name": "WebviewTeste",
+			"path": ".."
+		}
+	],
+	"settings": {
+		"C_Cpp.default.includePath": [
+			"${workspaceFolder}/**",
+			"/home/hiago/vega/sdk/vega-sdk/main/2.0.13986/workspace/App/NativeRuntime/build/private/sysroot-armv7/usr/include/**",
+			"/home/hiago/vega/sdk/vega-sdk/main/2.0.13986/workspace/App/NativeRuntime/build/private/sysroot-aarch64/usr/include/**",
+			"/home/hiago/vega/sdk/vega-sdk/main/2.0.13986/workspace/App/NativeRuntime/build/private/sysroot-x86_64/usr/include/**"
+		],
+		"C_Cpp.default.compilerPath": "/home/hiago/vega/sdk/vega-sdk/main/2.0.13986/workspace/App/NativeRuntime/build/private/toolchain/armv7/linux/bin/clang"
+	}
+}
