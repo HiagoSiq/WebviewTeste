@@ -23,6 +23,7 @@ jest.mock('@amazon-devices/react-native-w3cmedia', () => ({
 
 jest.mock('@amazon-devices/react-native-kepler', () => ({
   usePreventHideSplashScreen: jest.fn(),
+  useTVEventHandler: jest.fn(),
   useHideSplashScreenCallback: jest.fn(() => jest.fn()),
   StyleSheet: {create: (styles: unknown) => styles},
   View: 'View',
