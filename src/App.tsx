@@ -22,7 +22,7 @@ const AUDIO_SILENCIO = 'file:///pkg/assets/silencio.mp3';
 const MARGEM_FIM_SEG = 5;
 
 // Barrinha de diagnóstico no canto da tela. Depois de estável, mude para false.
-const MOSTRAR_DIAGNOSTICO = true;
+const MOSTRAR_DIAGNOSTICO = !!(globalThis as any).__DEV__;
 
 // 'DEBUG' ou 'RELEASE': mostra na barrinha qual build está instalado.
 const TIPO_BUILD = (globalThis as any).__DEV__ ? 'DEBUG' : 'RELEASE';
@@ -44,22 +44,28 @@ const SCRIPT_CURSOR = `
   }
 
   var CFG = {
-    passoMin: 6,         // px por toque
-    passoMax: 48,        // px por repetição quando o botão fica pressionado
-    aceleracao: 1.25,    // quanto acelera a cada repetição
+    velBase: 400,        // px por segundo ao começar a segurar
+    multMax: 3,          // velocidade máxima = 3x a base (1200 px/s)
+    rampaMs: 1000,       // tempo segurando até chegar na velocidade máxima
+    seguracaMs: 800,     // segurança: para se ficar tanto tempo sem nenhum evento de tecla
     esconderMs: 6000,    // some depois de X ms parado (0 = nunca)
     bordaScroll: 40,     // distância da borda que começa a rolar a página
-    passoScroll: 60      // px de rolagem por toque na borda
+    velScroll: 600       // px por segundo de rolagem quando o cursor está na borda
   };
 
   var x = window.innerWidth / 2;
   var y = window.innerHeight / 2;
   var ligado = true;
-  var veloc = CFG.passoMin;
-  var ultimaTecla = 0;
   var cursor = null;
   var timerEsconder = null;
   var sobre = null;
+
+  var dirs = {up: false, down: false, left: false, right: false};
+  var inicioSegurar = 0;
+  var ultimoEvento = 0;
+  var rafId = 0;
+  var tAnterior = 0;
+  var ultimoMover = 0;
 
   function criarCursor() {
     if (cursor || !document.body) { return; }
@@ -78,7 +84,7 @@ const SCRIPT_CURSOR = `
 
   function desenhar() {
     if (!cursor) { return; }
-    cursor.style.transform = 'translate(' + (x - 3) + 'px,' + (y - 2) + 'px)';
+    cursor.style.transform = 'translate3d(' + (x - 3) + 'px,' + (y - 2) + 'px,0)';
     cursor.style.display = ligado ? 'block' : 'none';
     cursor.style.opacity = '1';
     if (timerEsconder) { clearTimeout(timerEsconder); }
@@ -130,23 +136,102 @@ const SCRIPT_CURSOR = `
     evMouse('mousemove', el);
   }
 
-  function clicar() {
+  function desc(n) {
+    if (!n) { return '-'; }
+    return n.tagName + (n.id ? '#' + n.id : '') + (n.type ? '[' + n.type + ']' : '');
+  }
+
+  // Acha o campo/botão do clique, mesmo se o ponto caiu na borda ou num contêiner do campo.
+  function achaControle(el) {
+    if (!el || !el.closest) { return null; }
+    var c = el.closest('input,textarea,select,button,a,[contenteditable="true"],[tabindex]');
+    if (c) { return c; }
+    var lab = el.closest('label');
+    if (lab && lab.control) { return lab.control; }
+    var p = el;
+    for (var i = 0; i < 2 && p; i++) {
+      var campos = p.querySelectorAll ? p.querySelectorAll('input,textarea,select') : [];
+      if (campos.length === 1) { return campos[0]; }
+      p = p.parentElement;
+    }
+    return null;
+  }
+
+  function focar(c) {
+    try { c.focus({preventScroll: true}); } catch (e) { try { c.focus(); } catch (e2) {} }
+    try {
+      if (c.setSelectionRange && c.value !== undefined) {
+        var n = c.value.length;
+        c.setSelectionRange(n, n);
+      }
+    } catch (e) {}
+  }
+
+  // O foco acompanha o cursor: o OK nativo da TV cai no campo que está sob a seta.
+  function sincronizarFoco() {
+    if (!ligado) { return; }
+    var ctl = achaControle(alvo());
+    if (ctl && document.activeElement !== ctl) { focar(ctl); }
+  }
+
+  // Detecta clique nativo (o do sistema, não o nosso) para não clicar duas vezes.
+  var ultimoNativo = 0;
+  var nativoEl = null;
+  document.addEventListener('click', function (e) {
+    if (e.isTrusted) { ultimoNativo = Date.now(); nativoEl = e.target; }
+  }, true);
+
+  // Clique simulado de verdade (hover + foco + eventos de mouse).
+  function executarClique() {
     var el = alvo();
+    var antes = document.activeElement;
     evMouse('pointerdown', el);
     evMouse('mousedown', el);
-    var focavel = el.closest ? el.closest('input,textarea,select,button,a,[tabindex],[contenteditable="true"]') : null;
-    if (focavel && typeof focavel.focus === 'function') {
-      try { focavel.focus({preventScroll: true}); } catch (e) { focavel.focus(); }
+    var ctl = achaControle(el);
+    if (ctl) {
+      if (antes && antes !== ctl && typeof antes.blur === 'function') {
+        try { antes.blur(); } catch (e) {}
+      }
+      focar(ctl);
+      // Se o foco nativo devolver o foco ao campo antigo, retoma.
+      setTimeout(function () {
+        if (document.activeElement !== ctl) { focar(ctl); }
+        enviar({tipo: 'cursor', msg: 'clique em ' + desc(el) + ' | campo: ' + desc(ctl) +
+          ' | ativo: ' + desc(document.activeElement)});
+      }, 150);
+    } else {
+      enviar({tipo: 'cursor', msg: 'clique em ' + desc(el) + ' | sem campo'});
     }
     evMouse('pointerup', el);
     evMouse('mouseup', el);
     evMouse('click', el, {detail: 1});
     // <select> nativo não abre com clique simulado: avança para a próxima opção.
-    if (focavel && focavel.tagName === 'SELECT' && focavel.options.length) {
-      focavel.selectedIndex = (focavel.selectedIndex + 1) % focavel.options.length;
-      focavel.dispatchEvent(new Event('input', {bubbles: true}));
-      focavel.dispatchEvent(new Event('change', {bubbles: true}));
+    if (ctl && ctl.tagName === 'SELECT' && ctl.options.length) {
+      ctl.selectedIndex = (ctl.selectedIndex + 1) % ctl.options.length;
+      ctl.dispatchEvent(new Event('input', {bubbles: true}));
+      ctl.dispatchEvent(new Event('change', {bubbles: true}));
     }
+  }
+
+  var ultimoClique = 0;
+
+  function clicar() {
+    var agora = Date.now();
+    if (agora - ultimoClique < 300) { return; }   // ignora OK duplicado
+    ultimoClique = agora;
+    mover();
+    sincronizarFoco();
+    setTimeout(function () {
+      var el = alvo();
+      var c = achaControle(el) || el;
+      var mesmo = nativoEl && (nativoEl === c ||
+        (c.contains && c.contains(nativoEl)) || (nativoEl.contains && nativoEl.contains(c)));
+      if (Date.now() - ultimoNativo < 500 && mesmo) {
+        enviar({tipo: 'cursor', msg: 'clique nativo no mesmo alvo; ignorei o simulado'});
+        return;
+      }
+      executarClique();
+    }, 120);
   }
 
   function rolavel(el, dx, dy) {
@@ -166,19 +251,84 @@ const SCRIPT_CURSOR = `
     return window.scrollY !== aT || window.scrollX !== aL;
   }
 
-  function rolarSePreciso(dx, dy) {
+  // Rolagem proporcional ao tempo do quadro (dt em ms).
+  function rolarSePreciso(dx, dy, dt) {
     var w = window.innerWidth, h = window.innerHeight, b = CFG.bordaScroll;
+    var p = Math.max(1, Math.round(CFG.velScroll * dt / 1000));
     var sx = 0, sy = 0;
-    if (dy > 0 && y >= h - b) { sy = CFG.passoScroll; }
-    if (dy < 0 && y <= b) { sy = -CFG.passoScroll; }
-    if (dx > 0 && x >= w - b) { sx = CFG.passoScroll; }
-    if (dx < 0 && x <= b) { sx = -CFG.passoScroll; }
+    if (dy > 0 && y >= h - b) { sy = p; }
+    if (dy < 0 && y <= b) { sy = -p; }
+    if (dx > 0 && x >= w - b) { sx = p; }
+    if (dx < 0 && x <= b) { sx = -p; }
     if (sx || sy) { rolavel(alvo(), sx, sy); }
   }
 
-  var DIRECOES = {
-    ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0],
-    Up: [0, -1], Down: [0, 1], Left: [-1, 0], Right: [1, 0]
+  // ----- Movimento fluido: um loop por quadro, com delta time -----
+
+  function algumaDirecao() {
+    return dirs.up || dirs.down || dirs.left || dirs.right;
+  }
+
+  function quadro(t) {
+    rafId = 0;
+    if (!algumaDirecao()) { return; }
+    var agora = Date.now();
+    if (agora - ultimoEvento > CFG.seguracaMs) { soltarTudo(); return; }
+
+    var dt = Math.min(t - tAnterior, 50);
+    tAnterior = t;
+    if (dt < 0) { dt = 0; }
+
+    var dx = (dirs.right ? 1 : 0) - (dirs.left ? 1 : 0);
+    var dy = (dirs.down ? 1 : 0) - (dirs.up ? 1 : 0);
+    if (dx || dy) {
+      var len = Math.sqrt(dx * dx + dy * dy);
+      var progresso = Math.min(1, (agora - inicioSegurar) / CFG.rampaMs);
+      var fator = 1 + (CFG.multMax - 1) * progresso;
+      var passo = CFG.velBase * fator * dt / 1000;
+      x = Math.max(0, Math.min(window.innerWidth - 1, x + (dx / len) * passo));
+      y = Math.max(0, Math.min(window.innerHeight - 1, y + (dy / len) * passo));
+      desenhar();
+      if (t - ultimoMover > 40) { ultimoMover = t; mover(); }
+      rolarSePreciso(dx, dy, dt);
+    }
+    rafId = requestAnimationFrame(quadro);
+  }
+
+  function iniciarLoop() {
+    if (rafId) { return; }
+    tAnterior = performance.now();
+    rafId = requestAnimationFrame(quadro);
+  }
+
+  function pressionar(nome) {
+    criarCursor();
+    var tinha = algumaDirecao();
+    dirs[nome] = true;
+    ultimoEvento = Date.now();
+    if (!tinha) { inicioSegurar = ultimoEvento; }
+    iniciarLoop();
+  }
+
+  function soltar(nome) {
+    dirs[nome] = false;
+    if (!algumaDirecao()) {
+      if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+      mover();
+      sincronizarFoco();
+    }
+  }
+
+  function soltarTudo() {
+    dirs.up = dirs.down = dirs.left = dirs.right = false;
+    if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    mover();
+    sincronizarFoco();
+  }
+
+  var NOMES = {
+    ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+    Up: 'up', Down: 'down', Left: 'left', Right: 'right'
   };
   var CODIGOS = {38: 'ArrowUp', 40: 'ArrowDown', 37: 'ArrowLeft', 39: 'ArrowRight'};
 
@@ -192,31 +342,21 @@ const SCRIPT_CURSOR = `
       e.keyCode === 179 || e.keyCode === 85;
   }
 
-  function andar(dx, dy, repetindo) {
-    criarCursor();
-    var agora = Date.now();
-    if (repetindo || agora - ultimaTecla < 180) {
-      veloc = Math.min(CFG.passoMax, veloc * CFG.aceleracao);
-    } else {
-      veloc = CFG.passoMin;
-    }
-    ultimaTecla = agora;
-    x = Math.max(0, Math.min(window.innerWidth - 1, x + dx * veloc));
-    y = Math.max(0, Math.min(window.innerHeight - 1, y + dy * veloc));
-    desenhar();
-    mover();
-    rolarSePreciso(dx, dy);
-  }
-
   // Comandos vindos do app (quando o controle não chega como tecla na página).
+  // 'up'/'down'/'left'/'right' = apertou; 'solta_up' etc. = soltou.
   api.comando = function (c) {
     if (api.viaPagina) { return; }
     criarCursor();
-    if (c === 'alternar') { ligado = !ligado; desenhar(); return; }
+    if (c === 'alternar') {
+      ligado = !ligado;
+      if (!ligado) { soltarTudo(); }
+      desenhar();
+      return;
+    }
     if (!ligado) { return; }
     if (c === 'ok') { desenhar(); clicar(); return; }
-    var d = {up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0]}[c];
-    if (d) { andar(d[0], d[1], false); }
+    if (c.indexOf('solta_') === 0) { soltar(c.substring(6)); return; }
+    if (dirs.hasOwnProperty(c)) { pressionar(c); }
   };
 
   window.addEventListener('keydown', function (e) {
@@ -224,6 +364,7 @@ const SCRIPT_CURSOR = `
     enviar({tipo: 'tecla', msg: (e.key || '?') + ' / ' + e.keyCode});
     if (ehAlternar(e)) {
       ligado = !ligado;
+      if (!ligado) { soltarTudo(); }
       desenhar();
       e.preventDefault(); e.stopPropagation();
       return;
@@ -231,27 +372,37 @@ const SCRIPT_CURSOR = `
     if (!ligado) { return; }
 
     var tecla = nomeTecla(e);
-    var d = DIRECOES[tecla];
+    var nome = NOMES[tecla];
     var ok = tecla === 'Enter' || e.keyCode === 13 || e.keyCode === 23;
-    if (d || ok) {
+    if (nome || ok) {
       if (!api.viaPagina) {
         api.viaPagina = true;
         enviar({tipo: 'cursor', msg: 'teclas chegam na página (' + tecla + ')'});
       }
       e.preventDefault(); e.stopImmediatePropagation();
     }
-    if (d) { andar(d[0], d[1], e.repeat); return; }
-    if (ok) { desenhar(); clicar(); }
+    if (nome) { pressionar(nome); return; }
+    if (ok && !e.repeat) { desenhar(); clicar(); }
   }, true);
 
-  // Também bloqueia o keyup das setas/OK, para a página não reagir a eles.
   window.addEventListener('keyup', function (e) {
     if (!ligado) { return; }
     var tecla = nomeTecla(e);
-    if (DIRECOES[tecla] || tecla === 'Enter' || e.keyCode === 13 || e.keyCode === 23) {
+    var nome = NOMES[tecla];
+    if (nome) { soltar(nome); }
+    if (nome || tecla === 'Enter' || e.keyCode === 13 || e.keyCode === 23) {
       e.preventDefault(); e.stopImmediatePropagation();
     }
   }, true);
+
+  window.addEventListener('keypress', function (e) {
+    if (!ligado) { return; }
+    if (e.key === 'Enter' || e.keyCode === 13 || e.keyCode === 23) {
+      e.preventDefault(); e.stopImmediatePropagation();
+    }
+  }, true);
+
+  window.addEventListener('blur', soltarTudo);
 
   window.addEventListener('resize', function () {
     x = Math.min(x, window.innerWidth - 1);
@@ -575,9 +726,7 @@ export const App = () => {
     const tipo: string = ev?.eventType ?? '';
     const acao = ev?.eventKeyAction;
     atualizarDiag({teclaApp: `${tipo}/${acao}`});
-    if (!USAR_CURSOR || acao === 1) {
-      return; // só reage ao apertar, não ao soltar
-    }
+
     const mapa: Record<string, string> = {
       up: 'up',
       down: 'down',
@@ -588,14 +737,23 @@ export const App = () => {
       playpause: 'alternar',
     };
     const cmd = mapa[tipo];
-    if (cmd) {
-      try {
-        webRef.current?.injectJavaScript(
-          `window.__cursorTV && window.__cursorTV.comando && window.__cursorTV.comando('${cmd}'); true;`,
-        );
-      } catch (e) {
-        registrarErro('cursor/app', e);
+    if (!USAR_CURSOR || !cmd) {
+      return;
+    }
+    let comando = cmd;
+    if (acao === 1) {
+      // soltou o botão: só as setas precisam avisar, OK e Play/Pause não
+      if (cmd === 'ok' || cmd === 'alternar') {
+        return;
       }
+      comando = 'solta_' + cmd;
+    }
+    try {
+      webRef.current?.injectJavaScript(
+        `window.__cursorTV && window.__cursorTV.comando && window.__cursorTV.comando('${comando}'); true;`,
+      );
+    } catch (e) {
+      registrarErro('cursor/app', e);
     }
   });
 
