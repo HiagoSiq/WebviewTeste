@@ -6,7 +6,7 @@ version = "0.1.0"
 # Floor so local builds pass vpt validate; pass an increasing --build-number for every Appstore upload.
 build-number = 1
 id = "com.amazondeveloper.webviewteste"
-
+icon = "@image/icone.png"
 [os.version]
 min = "2.0"
 target = "2.0"
